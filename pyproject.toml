@@ -34,9 +34,9 @@ build-backend = "setuptools.build_meta"
 #                    "torchaudio==2.11.0+rocm7.2.4"
 [project.optional-dependencies]
 rocm = [
-    "torch[device-all]==2.12.0+rocm7.2.4 @ https://repo.amd.com/rocm/whl-multi-arch/",
-    "torchvision[device-all]==0.27.0+rocm7.2.4 @ https://repo.amd.com/rocm/whl-multi-arch/",
-    "torchaudio==2.11.0+rocm7.2.4 @ https://repo.amd.com/rocm/whl-multi-arch/",
+    "torch[device-all] @ https://repo.amd.com",
+    "torchvision[device-all] @ https://repo.amd.com",
+    "torchaudio @ https://repo.amd.com",
 ]
 
 [tool.setuptools]
