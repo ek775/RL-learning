@@ -44,8 +44,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from transformer import Transformer, TransformerConfig
-from loss import sequence_log_probs, ppo_policy_loss, kl_penalty
+from .transformer import Transformer, TransformerConfig
+from .loss import sequence_log_probs, ppo_policy_loss, kl_penalty
 
 
 # ---------------------------------------------------------------------------

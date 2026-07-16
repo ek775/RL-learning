@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import sys
 import time
 from pathlib import Path
 
@@ -49,9 +48,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 from transformers import AutoTokenizer
+from torch.utils.tensorboard import SummaryWriter
 
-sys.path.insert(0, str(Path(__file__).parent))
-from transformer import Transformer, TransformerConfig
+from rl.transformer import Transformer, TransformerConfig
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +259,11 @@ def train(args: argparse.Namespace) -> None:
 
     print(f"Model parameters: {policy.num_params() / 1e6:.1f}M")
 
+    # --- TensorBoard --------------------------------------------------------
+    writer = SummaryWriter(log_dir=args.log_dir)
+    writer.add_text("config/model", str(cfg), 0)
+    writer.add_scalar("config/beta", args.beta, 0)
+
     # --- Dataset ------------------------------------------------------------
     print("Loading Intel/orca_dpo_pairs ...")
     raw = load_dataset("Intel/orca_dpo_pairs")
@@ -309,12 +313,16 @@ def train(args: argparse.Namespace) -> None:
                       f"acc {metrics['dpo/accuracy']:.3f}  "
                       f"margin {metrics['dpo/reward_margin']:.3f}  "
                       f"{elapsed:.0f}s")
+                for tag, val in metrics.items():
+                    writer.add_scalar(tag, val, step)
                 t0 = time.time()
 
             if step % args.eval_interval == 0 and step > 0:
                 val_metrics = evaluate(policy, ref_model, val_loader, device, args.beta)
                 print(f"  [val]  loss {val_metrics['dpo/loss']:.4f}  "
                       f"acc {val_metrics['dpo/accuracy']:.3f}")
+                for tag, val in val_metrics.items():
+                    writer.add_scalar(tag.replace("dpo/", "val/"), val, step)
 
             if step % args.save_interval == 0 and step > 0:
                 save_path = Path(args.out_dir) / f"dpo_step{step}.pt"
@@ -324,10 +332,12 @@ def train(args: argparse.Namespace) -> None:
 
             step += 1
 
-    save_path = Path(args.out_dir) / "dpo_final.pt"
+    writer.close()
+
+    save_path = Path(args.out_dir) / "finetuned.pt"
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"step": step, "model": policy.state_dict(), "cfg": cfg}, save_path)
-    print(f"Training complete. Final checkpoint: {save_path}")
+    print(f"Training complete. Model saved: {save_path}")
 
 
 @torch.no_grad()
@@ -361,7 +371,7 @@ def evaluate(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="DPO post-training on Intel/orca_dpo_pairs")
-    p.add_argument("--pretrain_ckpt",  type=str,   default="checkpoints/pretrain_final.pt",
+    p.add_argument("--pretrain_ckpt",  type=str,   default="models/pretrained.pt",
                    help="Path to pre-trained checkpoint (optional)")
     p.add_argument("--max_seq_len",    type=int,   default=1024,
                    help="Max tokens per sequence (prompt+response). Lower = faster.")
@@ -379,7 +389,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval_interval",  type=int,   default=500)
     p.add_argument("--save_interval",  type=int,   default=2000)
     p.add_argument("--num_workers",    type=int,   default=2)
-    p.add_argument("--out_dir",        type=str,   default="checkpoints")
+    p.add_argument("--out_dir",        type=str,   default="models")
+    p.add_argument("--log_dir",        type=str,   default="runs/dpo")
     p.add_argument("--device",         type=str,   default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed",           type=int,   default=42)
     return p.parse_args()

@@ -25,8 +25,16 @@ dependencies = [
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+# AMD ROCm — pip does not auto-detect the driver.
+# Use this source for torch/torchvision so the ROCm wheel is resolved correctly.
+# Install with:  pip install -e ".[rocm]"
+# or:            pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+[project.optional-dependencies]
+rocm = [
+    "torch @ https://download.pytorch.org/whl/rocm6.2",
+    "torchvision @ https://download.pytorch.org/whl/rocm6.2",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+package-dir = {"rl" = "src"}
+packages = ["rl"]

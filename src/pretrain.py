@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import sys
 import time
 from pathlib import Path
 
@@ -31,9 +30,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 from transformers import AutoTokenizer
+from torch.utils.tensorboard import SummaryWriter
 
-sys.path.insert(0, str(Path(__file__).parent))
-from transformer import Transformer, TransformerConfig
+from rl.transformer import Transformer, TransformerConfig
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +99,7 @@ def train(args: argparse.Namespace) -> None:
     # --- Tokenizer ----------------------------------------------------------
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.model_max_length = args.max_seq_len  # silence GPT-2's 1024-token warning
     vocab_size = tokenizer.vocab_size  # 50 257
 
     # --- Model --------------------------------------------------------------
@@ -113,6 +113,11 @@ def train(args: argparse.Namespace) -> None:
     )
     model = Transformer(cfg).to(device)
     print(f"Model parameters: {model.num_params() / 1e6:.1f}M")
+
+    # --- TensorBoard --------------------------------------------------------
+    writer = SummaryWriter(log_dir=args.log_dir)
+    writer.add_text("config/model", str(cfg), 0)
+    writer.add_scalar("config/num_params_M", model.num_params() / 1e6, 0)
 
     # --- Dataset ------------------------------------------------------------
     print("Loading wikitext-103-raw-v1 ...")
@@ -164,7 +169,7 @@ def train(args: argparse.Namespace) -> None:
         for pg in optimizer.param_groups:
             pg["lr"] = lr
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
         optimizer.step()
         optimizer.zero_grad()
 
@@ -173,14 +178,21 @@ def train(args: argparse.Namespace) -> None:
             elapsed = time.time() - t0
             ppl     = math.exp(min(running_loss, 20))
             print(f"step {step:6d}  loss {running_loss:.4f}  ppl {ppl:.2f}  "
-                  f"lr {lr:.2e}  {elapsed:.0f}s")
+                  f"lr {lr:.2e}  grad_norm {grad_norm:.3f}  {elapsed:.0f}s")
+            writer.add_scalar("train/loss",      running_loss,     step)
+            writer.add_scalar("train/ppl",       ppl,              step)
+            writer.add_scalar("train/lr",        lr,               step)
+            writer.add_scalar("train/grad_norm", grad_norm.item(), step)
             running_loss = 0.0
             t0 = time.time()
 
         # Validation
         if step % args.eval_interval == 0 and step > 0:
             val_loss = evaluate(model, val_loader, device, vocab_size, max_batches=50)
-            print(f"  [val]  loss {val_loss:.4f}  ppl {math.exp(val_loss):.2f}")
+            val_ppl  = math.exp(min(val_loss, 20))
+            print(f"  [val]  loss {val_loss:.4f}  ppl {val_ppl:.2f}")
+            writer.add_scalar("val/loss", val_loss, step)
+            writer.add_scalar("val/ppl",  val_ppl,  step)
 
         # Checkpoint
         if step % args.save_interval == 0 and step > 0:
@@ -193,11 +205,13 @@ def train(args: argparse.Namespace) -> None:
         step       += 1
         accum_step  = 0
 
-    # Final save
-    save_path = Path(args.out_dir) / "pretrain_final.pt"
+    writer.close()
+
+    # Final model
+    save_path = Path(args.out_dir) / "pretrained.pt"
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"step": step, "model": model.state_dict(), "cfg": cfg}, save_path)
-    print(f"Training complete. Final checkpoint: {save_path}")
+    print(f"Training complete. Model saved: {save_path}")
 
 
 @torch.no_grad()
@@ -247,7 +261,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval_interval",   type=int,   default=500)
     p.add_argument("--save_interval",   type=int,   default=2000)
     p.add_argument("--num_workers",     type=int,   default=2)
-    p.add_argument("--out_dir",         type=str,   default="checkpoints")
+    p.add_argument("--out_dir",         type=str,   default="models")
+    p.add_argument("--log_dir",         type=str,   default="runs/pretrain")
     p.add_argument("--device",          type=str,   default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed",            type=int,   default=42)
     return p.parse_args()
