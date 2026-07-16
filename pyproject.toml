@@ -11,7 +11,6 @@ license = { file = "LICENSE" }
 requires-python = ">=3.14"
 
 dependencies = [
-    "torch",
     "tensorboard",
     "transformers",
     "datasets",
@@ -34,6 +33,12 @@ rocm = [
     "torch[device-all]==2.12.0+rocm7.2.4",
     "torchvision[device-all]==0.27.0+rocm7.2.4",
     "torchaudio==2.11.0+rocm7.2.4",
+]
+
+cuda = [
+    "torch",
+    "torchvision",
+    "torchaudio",
 ]
 
 [tool.setuptools]
