@@ -44,18 +44,37 @@ class PackedTextDataset(Dataset):
     Concatenates all tokenised documents into one long stream and cuts it into
     fixed-length blocks of `block_size` tokens.  The next-token prediction
     target for each block is the same block shifted right by one.
+
+    Uses dataset.map() with the underlying fast tokenizer (backend_tokenizer)
+    for parallel batch tokenisation — no Python loop, no length-check warnings,
+    and results are cached on disk by HuggingFace datasets.
     """
 
-    def __init__(self, hf_split, tokenizer, block_size: int):
-        token_ids: list[int] = []
-        for example in hf_split:
-            text = example.get("text", "") or ""
-            if text.strip():
-                ids = tokenizer.encode(text, add_special_tokens=False)
-                token_ids.extend(ids)
-                token_ids.append(tokenizer.eos_token_id)  # document boundary
+    def __init__(self, hf_split, tokenizer, block_size: int, map_batch_size: int = 512):
+        eos = tokenizer.eos_token_id
+        # Use the raw tokenizers.Tokenizer directly — bypasses the transformers
+        # wrapper's model_max_length check entirely, and encode_batch is fast C++.
+        _bt = tokenizer.backend_tokenizer
 
-        # Trim to a multiple of block_size
+        def _tokenize(batch):
+            encoded = _bt.encode_batch(batch["text"])
+            return {"input_ids": [e.ids for e in encoded]}
+
+        tokenized = hf_split.map(
+            _tokenize,
+            batched=True,
+            batch_size=map_batch_size,
+            remove_columns=hf_split.column_names,
+            desc="Tokenizing",
+        )
+
+        # Flatten all documents into one token stream, EOS-separated
+        token_ids: list[int] = []
+        for ids in tokenized["input_ids"]:
+            if ids:
+                token_ids.extend(ids)
+                token_ids.append(eos)
+
         total = (len(token_ids) // block_size) * block_size
         self.data = torch.tensor(token_ids[:total], dtype=torch.long)
         self.block_size = block_size
@@ -123,8 +142,8 @@ def train(args: argparse.Namespace) -> None:
     print("Loading wikitext-103-raw-v1 ...")
     raw = load_dataset("iohadrubin/wikitext-103-raw-v1")
 
-    train_ds = PackedTextDataset(raw["train"],      tokenizer, args.max_seq_len)
-    val_ds   = PackedTextDataset(raw["validation"], tokenizer, args.max_seq_len)
+    train_ds = PackedTextDataset(raw["train"],      tokenizer, args.max_seq_len, args.batch_size)
+    val_ds   = PackedTextDataset(raw["validation"], tokenizer, args.max_seq_len, args.batch_size)
     print(f"Train blocks: {len(train_ds):,}  |  Val blocks: {len(val_ds):,}")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
@@ -243,7 +262,7 @@ def _cycle(loader: DataLoader):
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Pre-train the transformer on wikitext-103")
-    p.add_argument("--max_seq_len",     type=int,   default=4096)
+    p.add_argument("--max_seq_len",     type=int,   default=1024)
     p.add_argument("--d_model",         type=int,   default=512)
     p.add_argument("--n_heads",         type=int,   default=8)
     p.add_argument("--n_layers",        type=int,   default=6)
