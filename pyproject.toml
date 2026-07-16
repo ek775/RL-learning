@@ -26,17 +26,14 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 # AMD ROCm — pip does not auto-detect the driver.
-# Use this source for torch/torchvision/torchaudio so the ROCm wheel is resolved correctly.
-# Install with:  pip install -e ".[rocm]"
-# or:            pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ \
-#                    "torch[device-all]==2.12.0+rocm7.2.4" \
-#                    "torchvision[device-all]==0.27.0+rocm7.2.4" \
-#                    "torchaudio==2.11.0+rocm7.2.4"
+# The AMD repo is an index, not a direct-download URL, so --index-url must be passed at install time.
+# Install with:
+#   pip install -e ".[rocm]" --index-url https://repo.amd.com/rocm/whl-multi-arch/
 [project.optional-dependencies]
 rocm = [
-    "torch[device-all] @ https://repo.amd.com/rocm/whl-multi-arch/",
-    "torchvision[device-all] @ https://repo.amd.com/rocm/whl-multi-arch/",
-    "torchaudio @ https://repo.amd.com/rocm/whl-multi-arch/",
+    "torch[device-all]==2.12.0+rocm7.2.4",
+    "torchvision[device-all]==0.27.0+rocm7.2.4",
+    "torchaudio==2.11.0+rocm7.2.4",
 ]
 
 [tool.setuptools]
