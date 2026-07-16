@@ -10,7 +10,9 @@ authors = [
 license = { file = "LICENSE" }
 requires-python = ">=3.14"
 
+# note if running on AMD GPU, install torch specifically for your setup as found here: https://pytorch.org/get-started/locally/
 dependencies = [
+    "torch",
     "tensorboard",
     "transformers",
     "datasets",
@@ -23,23 +25,6 @@ dependencies = [
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
-
-# AMD ROCm — pip does not auto-detect the driver.
-# The AMD repo is an index, not a direct-download URL, so --index-url must be passed at install time.
-# Install with:
-#   pip install -e ".[rocm]" --index-url https://repo.amd.com/rocm/whl-multi-arch/
-[project.optional-dependencies]
-rocm = [
-    "torch[device-all]==2.12.0+rocm7.2.4",
-    "torchvision[device-all]==0.27.0+rocm7.2.4",
-    "torchaudio==2.11.0+rocm7.2.4",
-]
-
-cuda = [
-    "torch",
-    "torchvision",
-    "torchaudio",
-]
 
 [tool.setuptools]
 package-dir = {"rl" = "src"}
