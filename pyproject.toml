@@ -1,0 +1,32 @@
+[project]
+name = "RL"
+version = "0.1.0"
+description = "A reinforcement learning project"
+authors = [
+    { name = "me", email = "me@example.com" },
+    { name = "myself", email = "myself@example.com" },
+    { name = "I", email = "i@example.com" },
+]
+license = { file = "LICENSE" }
+requires-python = ">=3.14"
+
+dependencies = [
+    "torch",
+    "tensorboard",
+    "transformers",
+    "datasets",
+    "pandas",
+    "jupyter",
+    "matplotlib",
+    "tqdm",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
