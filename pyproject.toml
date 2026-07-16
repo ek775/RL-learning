@@ -31,8 +31,8 @@ build-backend = "setuptools.build_meta"
 # or:            pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
 [project.optional-dependencies]
 rocm = [
-    "torch @ https://pytorch.org",
-    "torchvision @ https://pytorch.org",
+    "torch @ https://repo.amd.com/rocm/whl-multi-arch/",
+    "torchvision @ https://repo.amd.com/rocm/whl-multi-arch/",
 ]
 
 [tool.setuptools]
