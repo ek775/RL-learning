@@ -110,6 +110,12 @@ class TransformerForCausalLM(PreTrainedModel):
     def set_output_embeddings(self, new_embeddings: torch.nn.Linear) -> None:
         self.model.lm_head = new_embeddings
 
+    def tie_weights(self) -> None:
+        # embed and lm_head share the same weight tensor (see TransformerConfig.tie_embeddings).
+        # Declaring this explicitly lets HuggingFace save only one copy instead of
+        # raising a RuntimeError about "shared tensors not properly defined".
+        self.model.lm_head.weight = self.model.embed.weight
+
     def forward(
         self,
         input_ids: torch.Tensor,
