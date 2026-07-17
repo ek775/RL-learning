@@ -176,10 +176,15 @@ def build_dpo_dataset(hf_split) -> Dataset:
         chosen   = (row.get("chosen")   or "").strip()
         rejected = (row.get("rejected") or "").strip()
 
-        prompt = (f"{system}\n" if system else "") + f"User: {question}\nAssistant: "
+        # No trailing space on the prompt: BPE tokenizers (e.g. GPT-2) merge a
+        # trailing space with the first word of the response into a single token
+        # (e.g. " Hello"), so tokenize(prompt) ≠ tokenize(prompt+chosen)[:n].
+        # Stripping the space here and prepending it to each response keeps the
+        # tokenization boundary unambiguous.
+        prompt = (f"{system}\n" if system else "") + f"User: {question}\nAssistant:"
         rows["prompt"].append(prompt)
-        rows["chosen"].append(chosen)
-        rows["rejected"].append(rejected)
+        rows["chosen"].append(" " + chosen)
+        rows["rejected"].append(" " + rejected)
 
     return Dataset.from_dict(rows)
 
@@ -277,6 +282,9 @@ def train(args: argparse.Namespace) -> None:
         seed                         = args.seed,
         max_length                   = args.max_seq_len,
 #        max_prompt_length            = args.max_seq_len // 2,
+        # Gradient checkpointing requires HF-native module internals; our custom
+        # TransformerBlock layers are not compatible, so disable it explicitly.
+        gradient_checkpointing       = False,
         # Single-process data loading avoids multiprocessing pickling issues
         # that arise from Python 3.14's forkserver start method.
         dataloader_num_workers       = 0,
