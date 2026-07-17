@@ -84,7 +84,10 @@ class TransformerForCausalLM(PreTrainedModel):
       - get/set_input_embeddings and get/set_output_embeddings
     """
 
-    config_class = TransformerHFConfig
+    config_class       = TransformerHFConfig
+    # Tells HF serialisation that model.lm_head.weight is tied to
+    # model.embed.weight so save_pretrained drops the duplicate copy.
+    _tied_weights_keys = ["model.lm_head.weight"]
 
     def __init__(self, config: TransformerHFConfig):
         super().__init__(config)
