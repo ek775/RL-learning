@@ -220,8 +220,13 @@ def parse_args() -> argparse.Namespace:
 
 def train(args: argparse.Namespace) -> None:
     # --- Tokenizer ----------------------------------------------------------
+    # Must match pretrain.py exactly so the token IDs embedded in the
+    # pre-trained weights are interpreted consistently:
+    #   BOS = EOS = PAD = <|endoftext|> (id 50256)
+    #   add_bos_token = False  (GPT-2 default — no BOS prepended)
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.model_max_length = args.max_seq_len  # suppress the >1024-token warning
 
     # --- Model --------------------------------------------------------------
     if args.pretrain_ckpt and Path(args.pretrain_ckpt).exists():
