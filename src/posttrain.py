@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 from pathlib import Path
 
 import torch
@@ -211,7 +212,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_grad_norm", type=float, default=1.0)
     p.add_argument("--log_interval",  type=int,   default=50)
     p.add_argument("--eval_interval", type=int,   default=500)
-    p.add_argument("--save_interval", type=int,   default=2000)
+    p.add_argument("--save_interval", type=int,   default=2000)    
+    p.add_argument("--gpu",            type=int,   default=0,
+                   help="CUDA/ROCm device index for the dedicated GPU (default: 0)")
     p.add_argument("--out_dir",       type=str,   default="models/dpo")
     p.add_argument("--log_dir",       type=str,   default="runs/dpo")
     p.add_argument("--seed",          type=int,   default=42)
@@ -219,6 +222,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def train(args: argparse.Namespace) -> None:
+    # --- Device restriction -------------------------------------------------
+    # On multi-GPU servers TRL/accelerate will spread policy and ref_model
+    # across all visible devices.  Pin to the dedicated GPU before any
+    # CUDA/ROCm context is created so accelerate only ever sees one device.
+    # HIP_VISIBLE_DEVICES is the AMD/ROCm equivalent of CUDA_VISIBLE_DEVICES.
+    gpu = str(args.gpu)
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", gpu)
+    os.environ.setdefault("HIP_VISIBLE_DEVICES",  gpu)
+
     # --- Tokenizer ----------------------------------------------------------
     # Must match pretrain.py exactly so the token IDs embedded in the
     # pre-trained weights are interpreted consistently:
