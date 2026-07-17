@@ -276,7 +276,7 @@ def train(args: argparse.Namespace) -> None:
         logging_dir                  = args.log_dir,
         seed                         = args.seed,
         max_length                   = args.max_seq_len,
-        max_prompt_length            = args.max_seq_len // 2,
+#        max_prompt_length            = args.max_seq_len // 2,
         # Single-process data loading avoids multiprocessing pickling issues
         # that arise from Python 3.14's forkserver start method.
         dataloader_num_workers       = 0,
