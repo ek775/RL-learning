@@ -85,9 +85,10 @@ class TransformerForCausalLM(PreTrainedModel):
     """
 
     config_class       = TransformerHFConfig
-    # Tells HF serialisation that model.lm_head.weight is tied to
-    # model.embed.weight so save_pretrained drops the duplicate copy.
-    _tied_weights_keys = ["model.lm_head.weight"]
+    # In this version of transformers, _get_tied_weight_keys iterates
+    # tied.keys(), so _tied_weights_keys must be a dict, not a list.
+    # Key = the weight path to drop from the saved state dict (the dependent copy).
+    _tied_weights_keys = {"model.lm_head.weight": None}
 
     def __init__(self, config: TransformerHFConfig):
         super().__init__(config)
