@@ -219,3 +219,14 @@ __marimo__/
 
 # VS code settings
 .vscode/*
+
+# model files are generally large
+*.h5
+*.ckpt
+*.pt
+*.pth
+*.sav
+*.pb
+*.tflite
+*.onnx
+*.pt
