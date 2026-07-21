@@ -36,7 +36,12 @@ class RewardModel(nn.Module):
     loss = rm.preference_loss(chosen_ids, rejected_ids)
     """
 
-    def __init__(self, cfg: TransformerConfig, pretrained: Transformer | None = None):
+    def __init__(
+        self,
+        cfg: TransformerConfig,
+        pretrained: Transformer | None = None,
+        pad_token_id: int = 0,
+    ):
         super().__init__()
         if pretrained is not None:
             self.backbone = pretrained
@@ -49,42 +54,63 @@ class RewardModel(nn.Module):
         self.value_head = nn.Linear(cfg.d_model, 1, bias=False)
         nn.init.normal_(self.value_head.weight, std=0.02)
 
-    def _last_token_hidden(self, input_ids: torch.Tensor) -> torch.Tensor:
+        # Token id used for padding — GPT-2's tokenizer sets pad == eos (50256),
+        # not 0, so this must be configurable rather than hard-coded.
+        self.pad_token_id = pad_token_id
+
+    def _last_token_hidden(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Run the backbone and pool the hidden state at the last *real* token.
-        input_ids: (batch, seq_len)
-        returns:   (batch, d_model)
+        input_ids:      (batch, seq_len)
+        attention_mask: (batch, seq_len), optional — 1 for real tokens, 0 for padding.
+        returns:        (batch, d_model)
         """
         hidden = self.backbone(input_ids)   # (batch, seq_len, d_model) — lm_head is Identity
-        # Find the index of the last non-padding token (assumes 0 = pad)
-        seq_lens = (input_ids != 0).sum(dim=1) - 1   # (batch,)
+        # Find the index of the last non-padding token. Prefer the attention
+        # mask (accurate even if a real token happens to equal pad_token_id);
+        # fall back to comparing against pad_token_id when no mask is given.
+        if attention_mask is not None:
+            seq_lens = attention_mask.sum(dim=1) - 1   # (batch,)
+        else:
+            seq_lens = (input_ids != self.pad_token_id).sum(dim=1) - 1   # (batch,)
         seq_lens = seq_lens.clamp(min=0)
         idx = seq_lens[:, None, None].expand(-1, 1, hidden.size(-1))
         return hidden.gather(1, idx).squeeze(1)      # (batch, d_model)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Returns scalar reward scores, shape (batch,).
         Higher score = model judges the response as better.
         """
-        h = self._last_token_hidden(input_ids)
+        h = self._last_token_hidden(input_ids, attention_mask)
         return self.value_head(h).squeeze(-1)
 
     def preference_loss(
         self,
         chosen_ids: torch.Tensor,
         rejected_ids: torch.Tensor,
+        chosen_mask: torch.Tensor | None = None,
+        rejected_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """
         Bradley-Terry pairwise ranking loss.
 
         chosen_ids:   (batch, seq_len_c)
         rejected_ids: (batch, seq_len_r)
+        chosen_mask, rejected_mask: optional attention masks matching the ids above.
 
         Returns (loss, metrics_dict).
         """
-        r_chosen   = self(chosen_ids)    # (batch,)
-        r_rejected = self(rejected_ids)  # (batch,)
+        r_chosen   = self(chosen_ids, chosen_mask)      # (batch,)
+        r_rejected = self(rejected_ids, rejected_mask)  # (batch,)
 
         loss = -F.logsigmoid(r_chosen - r_rejected).mean()
 
