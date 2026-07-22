@@ -307,6 +307,17 @@ class RewardModelWrapper(nn.Module):
         attention_mask: torch.Tensor | None = None,
         **kwargs,
     ) -> SequenceClassifierOutput:
+        # TRL builds reward inputs by re-tokenizing prompt+completion text
+        # independently of the policy's own prompt/completion length budgets,
+        # so the concatenated length is not guaranteed to fit the backbone's
+        # max_seq_len. Defensively left-truncate (keep the most recent tokens,
+        # since the reward is read from the last real token) to avoid a hard
+        # assertion failure in the backbone.
+        max_seq_len = self.reward_model.backbone.cfg.max_seq_len
+        if input_ids.size(1) > max_seq_len:
+            input_ids = input_ids[:, -max_seq_len:]
+            if attention_mask is not None:
+                attention_mask = attention_mask[:, -max_seq_len:]
         rewards = self.reward_model(input_ids, attention_mask)   # (batch,)
         return SequenceClassifierOutput(logits=rewards.unsqueeze(-1))
 
@@ -362,7 +373,9 @@ def build_prompt_dataset(hf_split) -> Dataset:
 def _resolve_online_rl_lengths(args: argparse.Namespace) -> tuple[int, int]:
     """Return safe (max_prompt_tokens, max_completion_tokens) within model context."""
     max_completion_tokens = min(args.max_completion_length, max(1, args.max_seq_len - 1))
-    prompt_budget_from_ctx = max(1, args.max_seq_len - max_completion_tokens)
+    # Keep a 1-token safety margin to avoid occasional 1025-token sequences
+    # from tokenizer/generation boundary effects.
+    prompt_budget_from_ctx = max(1, args.max_seq_len - max_completion_tokens - 1)
     if args.max_prompt_length is None:
         max_prompt_tokens = prompt_budget_from_ctx
     else:
