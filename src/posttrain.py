@@ -60,6 +60,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import transformers
 from datasets import Dataset, load_dataset
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -178,6 +179,74 @@ class TransformerForCausalLM(PreTrainedModel, GenerationMixin):
         return sum(p.numel() for p in self.parameters())
 
 
+class GRPOTrainerWithRefModel(GRPOTrainer):
+    """GRPOTrainer shim that accepts an explicit prebuilt reference model."""
+
+    def __init__(self, *args, ref_model: PreTrainedModel | None = None, **kwargs):
+        if ref_model is None:
+            super().__init__(*args, **kwargs)
+            return
+
+        args_obj = kwargs.get("args")
+        if args_obj is None:
+            raise ValueError("GRPOTrainerWithRefModel requires `args=` when passing `ref_model`.")
+
+        original_beta = args_obj.beta
+        args_obj.beta = 0.0
+        try:
+            super().__init__(*args, **kwargs)
+        finally:
+            args_obj.beta = original_beta
+
+        self.beta = original_beta
+        self.args.beta = original_beta
+
+        for param in ref_model.parameters():
+            param.requires_grad_(False)
+        ref_model.eval()
+
+        if self.is_deepspeed_enabled or self.is_fsdp_enabled:
+            raise NotImplementedError(
+                "Explicit `ref_model` injection is currently implemented for non-FSDP/non-Deepspeed runs only."
+            )
+
+        self.ref_model = self.accelerator.prepare_model(ref_model, evaluation_mode=True)
+
+
+class RLOOTrainerWithRefModel(RLOOTrainer):
+    """RLOOTrainer shim that accepts an explicit prebuilt reference model."""
+
+    def __init__(self, *args, ref_model: PreTrainedModel | None = None, **kwargs):
+        if ref_model is None:
+            super().__init__(*args, **kwargs)
+            return
+
+        args_obj = kwargs.get("args")
+        if args_obj is None:
+            raise ValueError("RLOOTrainerWithRefModel requires `args=` when passing `ref_model`.")
+
+        original_beta = args_obj.beta
+        args_obj.beta = 0.0
+        try:
+            super().__init__(*args, **kwargs)
+        finally:
+            args_obj.beta = original_beta
+
+        self.beta = original_beta
+        self.args.beta = original_beta
+
+        for param in ref_model.parameters():
+            param.requires_grad_(False)
+        ref_model.eval()
+
+        if self.is_deepspeed_enabled or self.is_fsdp_enabled:
+            raise NotImplementedError(
+                "Explicit `ref_model` injection is currently implemented for non-FSDP/non-Deepspeed runs only."
+            )
+
+        self.ref_model = self.accelerator.prepare_model(ref_model, evaluation_mode=True)
+
+
 # ---------------------------------------------------------------------------
 # Checkpoint loading
 # ---------------------------------------------------------------------------
@@ -290,6 +359,29 @@ def build_prompt_dataset(hf_split) -> Dataset:
     return Dataset.from_dict(rows)
 
 
+def _resolve_online_rl_lengths(args: argparse.Namespace) -> tuple[int, int]:
+    """Return safe (max_prompt_tokens, max_completion_tokens) within model context."""
+    max_completion_tokens = min(args.max_completion_length, max(1, args.max_seq_len - 1))
+    prompt_budget_from_ctx = max(1, args.max_seq_len - max_completion_tokens)
+    if args.max_prompt_length is None:
+        max_prompt_tokens = prompt_budget_from_ctx
+    else:
+        max_prompt_tokens = min(args.max_prompt_length, prompt_budget_from_ctx)
+    return max_prompt_tokens, max_completion_tokens
+
+
+def _truncate_prompt_dataset(dataset: Dataset, tokenizer: "AutoTokenizer", max_prompt_tokens: int) -> Dataset:
+    """Token-level truncation to keep prompt + completion inside model context."""
+    bt = tokenizer.backend_tokenizer
+
+    def _truncate(batch):
+        encodings = bt.encode_batch(batch["prompt"])
+        prompts = [bt.decode(enc.ids[:max_prompt_tokens]) for enc in encodings]
+        return {"prompt": prompts}
+
+    return dataset.map(_truncate, batched=True, desc=f"Truncating prompts to <= {max_prompt_tokens} tokens")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -336,6 +428,8 @@ def parse_args() -> argparse.Namespace:
                    help="Path to a trained reward-model checkpoint (see --method reward_model)")
     p.add_argument("--num_generations", type=int, default=4,
                    help="Number of completions sampled per prompt")
+    p.add_argument("--max_prompt_length", type=int, default=None,
+                   help="Max prompt tokens for GRPO/RLOO. Default auto-fits context budget.")
     p.add_argument("--max_completion_length", type=int, default=128,
                    help="Max new tokens generated per completion")
     p.add_argument("--temperature",   type=float, default=1.0, help="Sampling temperature")
@@ -637,7 +731,7 @@ def train_reward_model(args: argparse.Namespace) -> None:
 
 def _setup_online_rl(
     args: argparse.Namespace,
-) -> tuple[TransformerForCausalLM, "AutoTokenizer", RewardModelWrapper, Dataset, Dataset]:
+) -> tuple[TransformerForCausalLM, TransformerForCausalLM, "AutoTokenizer", RewardModelWrapper, Dataset, Dataset]:
     """Shared setup for GRPO and RLOO: policy, tokenizer, reward function, and prompt datasets."""
     gpu = str(args.gpu)
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", gpu)
@@ -646,6 +740,17 @@ def _setup_online_rl(
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.model_max_length = args.max_seq_len
+    max_prompt_tokens, max_completion_tokens = _resolve_online_rl_lengths(args)
+    if max_completion_tokens != args.max_completion_length:
+        print(
+            f"Clamped max_completion_length from {args.max_completion_length} to {max_completion_tokens} "
+            f"to fit max_seq_len={args.max_seq_len}."
+        )
+    if args.max_prompt_length is not None and args.max_prompt_length > max_prompt_tokens:
+        print(
+            f"Clamped max_prompt_length from {args.max_prompt_length} to {max_prompt_tokens} "
+            f"to fit max_seq_len={args.max_seq_len}."
+        )
 
     # --- Policy ---------------------------------------------------------------
     if args.pretrain_ckpt and Path(args.pretrain_ckpt).exists():
@@ -661,6 +766,12 @@ def _setup_online_rl(
         )
         policy = TransformerForCausalLM(hf_config)
         print("No checkpoint found — training from random init.")
+
+    ref_model = copy.deepcopy(policy)
+    for param in ref_model.parameters():
+        param.requires_grad_(False)
+    ref_model.eval()
+
     print(f"Model parameters: {policy.num_params() / 1e6:.1f}M")
 
     # --- Reward model (frozen) -------------------------------------------------
@@ -692,9 +803,11 @@ def _setup_online_rl(
 
     train_ds = build_prompt_dataset(train_hf)
     val_ds   = build_prompt_dataset(val_hf)
+    train_ds = _truncate_prompt_dataset(train_ds, tokenizer, max_prompt_tokens)
+    val_ds   = _truncate_prompt_dataset(val_ds, tokenizer, max_prompt_tokens)
     print(f"Train prompts: {len(train_ds):,}  |  Val prompts: {len(val_ds):,}")
 
-    return policy, tokenizer, reward_func, train_ds, val_ds
+    return policy, ref_model, tokenizer, reward_func, train_ds, val_ds
 
 
 def _save_online_rl_checkpoint(policy: TransformerForCausalLM, out_dir: str, global_step: int) -> None:
@@ -718,7 +831,8 @@ def train_grpo(args: argparse.Namespace) -> None:
     them with the reward model, and uses the group-normalised reward as the
     advantage — no critic/value model needed.
     """
-    policy, tokenizer, reward_func, train_ds, val_ds = _setup_online_rl(args)
+    policy, ref_model, tokenizer, reward_func, train_ds, val_ds = _setup_online_rl(args)
+    _, max_completion_tokens = _resolve_online_rl_lengths(args)
 
     grpo_config = GRPOConfig(
         output_dir                   = args.out_dir,
@@ -738,7 +852,7 @@ def train_grpo(args: argparse.Namespace) -> None:
         logging_dir                  = args.log_dir,
         seed                         = args.seed,
         num_generations              = args.num_generations,
-        max_completion_length        = args.max_completion_length,
+        max_completion_length        = max_completion_tokens,
         temperature                  = args.temperature,
         top_p                        = args.top_p,
         top_k                        = args.top_k,
@@ -751,8 +865,9 @@ def train_grpo(args: argparse.Namespace) -> None:
         remove_unused_columns        = False,
     )
 
-    trainer = GRPOTrainer(
+    trainer = GRPOTrainerWithRefModel(
         model                    = policy,
+        ref_model                = ref_model,
         reward_funcs             = reward_func,
         args                     = grpo_config,
         train_dataset            = train_ds,
@@ -773,7 +888,8 @@ def train_rloo(args: argparse.Namespace) -> None:
     sample's advantage is its reward minus the mean of the *other* samples in
     its group) instead of normalising by the group's standard deviation.
     """
-    policy, tokenizer, reward_func, train_ds, val_ds = _setup_online_rl(args)
+    policy, ref_model, tokenizer, reward_func, train_ds, val_ds = _setup_online_rl(args)
+    _, max_completion_tokens = _resolve_online_rl_lengths(args)
 
     rloo_config = RLOOConfig(
         output_dir                   = args.out_dir,
@@ -793,7 +909,7 @@ def train_rloo(args: argparse.Namespace) -> None:
         logging_dir                  = args.log_dir,
         seed                         = args.seed,
         num_generations              = args.num_generations,
-        max_completion_length        = args.max_completion_length,
+        max_completion_length        = max_completion_tokens,
         temperature                  = args.temperature,
         top_p                        = args.top_p,
         top_k                        = args.top_k,
@@ -806,8 +922,9 @@ def train_rloo(args: argparse.Namespace) -> None:
         remove_unused_columns        = False,
     )
 
-    trainer = RLOOTrainer(
+    trainer = RLOOTrainerWithRefModel(
         model                    = policy,
+        ref_model                = ref_model,
         reward_funcs             = reward_func,
         args                     = rloo_config,
         train_dataset            = train_ds,
